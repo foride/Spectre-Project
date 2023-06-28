@@ -1,10 +1,3 @@
-//
-// Created by foride on 5/20/2023.
-//
-
-#ifndef SPECTRE_ATTACK_FILEPATHTOADDRESS_H
-#define SPECTRE_ATTACK_FILEPATHTOADDRESS_H
-
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -51,5 +44,3 @@ FileData FileReader_readIntoBuffer(FileReader *reader) {
 void FileData_free(FileData *data) {
     free(data->buffer);
 }
-
-#endif //SPECTRE_ATTACK_FILEPATHTOADDRESS_H
